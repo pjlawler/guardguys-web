@@ -10,6 +10,7 @@ type Tab = "schedule" | "admin";
 export function App() {
   const [user, setUser] = useState<User | null>(() => loadSession());
   const [tab, setTab] = useState<Tab>("schedule");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   function handleLogin(u: User, token: string) {
     saveSession(u, token);
@@ -22,6 +23,11 @@ export function App() {
     setUser(null);
   }
 
+  function selectTab(next: Tab) {
+    setTab(next);
+    setMenuOpen(false);
+  }
+
   if (!user) {
     return <Login onLogin={handleLogin} />;
   }
@@ -29,26 +35,33 @@ export function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <div className="app-header-left">
-          <h1>GuardGuys</h1>
-          <nav className="tabs">
+        <h1>GuardGuys</h1>
+
+        <button
+          className="hamburger"
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((o) => !o)}
+        >
+          {menuOpen ? "✕" : "☰"}
+        </button>
+
+        <nav className={menuOpen ? "app-nav open" : "app-nav"}>
+          <button
+            className={tab === "schedule" ? "tab active" : "tab"}
+            onClick={() => selectTab("schedule")}
+          >
+            Schedule
+          </button>
+          {user.isAdmin && (
             <button
-              className={tab === "schedule" ? "tab active" : "tab"}
-              onClick={() => setTab("schedule")}
+              className={tab === "admin" ? "tab active" : "tab"}
+              onClick={() => selectTab("admin")}
             >
-              Schedule
+              Admin
             </button>
-            {user.isAdmin && (
-              <button
-                className={tab === "admin" ? "tab active" : "tab"}
-                onClick={() => setTab("admin")}
-              >
-                Admin
-              </button>
-            )}
-          </nav>
-        </div>
-        <div className="app-header-right">
+          )}
+          <span className="nav-spacer" />
           <span className="user-chip">
             {user.username}
             {user.isAdmin ? " · admin" : ""}
@@ -56,8 +69,13 @@ export function App() {
           <button className="btn-ghost" onClick={handleLogout}>
             Log out
           </button>
-        </div>
+        </nav>
       </header>
+
+      {menuOpen && (
+        <div className="nav-backdrop" onClick={() => setMenuOpen(false)} />
+      )}
+
       <main className="app-main">
         {tab === "schedule" ? <ScheduleWeek /> : <Admin />}
       </main>
