@@ -5,30 +5,30 @@ Web app for GuardGuys scheduling — a port of the iOS **GuardGuys Calendar**
 
 ## Status
 
-**Phase 1 — frontend against the existing backend (in progress).**
-A React + TypeScript + Vite frontend that talks to the existing GuardGuys API
-(`https://guardguys.herokuapp.com`). No backend rewrite yet.
+**Phase 2 — Cloudflare Worker + D1, with token auth (live).**
+The Worker implements `/api/*` against a Cloudflare **D1** (SQLite) database.
+Login issues a JWT; data endpoints require it; user management is admin-only.
+Heroku is retained as a fallback until the new backend is fully confirmed, then
+retired. See [`docs/MIGRATION.md`](docs/MIGRATION.md).
 
-**Phase 2 — migrate off Heroku (planned).**
-Replace the Heroku Express + Postgres backend with a Cloudflare Worker + D1
-(SQLite). The frontend won't change — it always calls `/api/*`. See
-[`docs/MIGRATION.md`](docs/MIGRATION.md).
+Hosted at:
+- **https://calendar.guardguys.com** (GitHub Pages, calls the Worker API)
+- **https://guardguys-web.pat-e8d.workers.dev** (Cloudflare: serves the app + API)
 
 ## How it works
 
 ```
-Browser ──/api/*──▶  ┌─ dev:  Vite proxy ──▶ Heroku API
-        ──/    ──▶   └─ prod: Cloudflare Worker ──▶ Heroku API (Phase 1)
-                                                 └─▶ D1          (Phase 2)
+Browser ──/api/*──▶  Cloudflare Worker ──▶ D1 (SQLite)   ← login = JWT, Bearer-gated
+        ──/    ──▶   Cloudflare Worker ──▶ static SPA assets
 ```
 
-The Heroku API sends **no CORS headers**, so the browser can't call it directly
-from another origin. Two same-origin shims solve this:
+The frontend always calls `/api/*` and sends `Authorization: Bearer <jwt>`. On
+Cloudflare the Worker serves both the app and the API (same origin); on GitHub
+Pages the app calls the Worker cross-origin (the Worker sends CORS headers).
 
-- **Dev:** Vite's dev server proxies `/api/*` to Heroku (`vite.config.ts`).
-- **Prod:** the Cloudflare Worker (`worker/index.ts`) serves the static app
-  **and** proxies `/api/*` to Heroku. In Phase 2 that proxy becomes real D1
-  handlers and Heroku goes away.
+Auth: `worker/auth.ts` (HS256 JWT via Web Crypto) + `bcryptjs` for password
+verification. The signing secret is a Worker secret (`JWT_SECRET`); for local
+`wrangler dev` put it in `.dev.vars`.
 
 ## The live API (verified 2026-06-14)
 
@@ -83,7 +83,10 @@ npm run worker:deploy  # wrangler deploy
 - [x] Project scaffold, API client, auth/session, weekly schedule view
 - [x] Event create / edit / delete UI (with assignment + on-site + notes)
 - [x] Admin: user management UI (create / edit / delete, admin-only tab)
-- [ ] Phase 2: Cloudflare Worker + D1 backend, data migration, retire Heroku
+- [x] Installable PWA (manifest + service worker)
+- [x] Custom domain (calendar.guardguys.com) with HTTPS
+- [x] Phase 2: Cloudflare Worker + D1 backend, token auth, data migrated
+- [ ] Confirm real-user login on production, then retire the Heroku app
 
 ## Layout
 
