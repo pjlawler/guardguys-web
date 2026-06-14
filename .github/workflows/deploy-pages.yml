@@ -19,7 +19,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      GITHUB_PAGES: "1"
       # GitHub Pages is static-only, so the app calls the Cloudflare Worker's
       # /api/* (which serves the same data with CORS enabled) instead of a
       # same-origin proxy. Update this if the Worker URL changes.

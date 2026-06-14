@@ -7,12 +7,12 @@ import { VitePWA } from "vite-plugin-pwa";
 // Vite's dev server proxies /api/* to Heroku so requests are same-origin.
 // In production the React app talks to the Cloudflare Worker (see /worker),
 // which proxies to Heroku in Phase 1 and becomes the D1-backed API in Phase 2.
-// GitHub Pages serves the app under /<repo>/, so assets need that base path.
-// Set GITHUB_PAGES=1 at build time for a Pages build (the workflow does this).
-const base = process.env.GITHUB_PAGES ? "/guardguys-web/" : "/";
-
+//
+// Base is "/" everywhere: the app is served at the root on Cloudflare
+// (guardguys-web.pat-e8d.workers.dev) and on the GitHub Pages custom domain
+// (calendar.guardguys.com). See public/CNAME.
 export default defineConfig({
-  base,
+  base: "/",
   plugins: [
     react(),
     VitePWA({
