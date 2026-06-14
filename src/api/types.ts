@@ -55,5 +55,7 @@ export interface UserInput {
 
 export interface LoginResult {
   user?: User;
+  /** JWT issued on successful login; sent as a Bearer token on later requests. */
+  token?: string;
   message?: string;
 }

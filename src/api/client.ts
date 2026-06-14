@@ -5,6 +5,7 @@ import type {
   UserInput,
   EventInput,
 } from "./types";
+import { clearSession, getToken } from "../lib/auth";
 
 // Base path for API calls. Empty string means "same origin", which works in
 // two setups:
@@ -24,10 +25,14 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
+  const isLogin = path.endsWith("/login");
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -43,6 +48,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
+    // An expired/invalid token on a non-login request: drop the session and
+    // send the user back to the login screen.
+    if (res.status === 401 && !isLogin) {
+      clearSession();
+      window.location.reload();
+    }
     const msg = extractErrorMessage(body) ?? `Request failed (${res.status})`;
     throw new ApiError(msg, res.status);
   }

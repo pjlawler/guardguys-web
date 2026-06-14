@@ -11,8 +11,8 @@ export function App() {
   const [user, setUser] = useState<User | null>(() => loadSession());
   const [tab, setTab] = useState<Tab>("schedule");
 
-  function handleLogin(u: User) {
-    saveSession(u);
+  function handleLogin(u: User, token: string) {
+    saveSession(u, token);
     setUser(u);
     setTab("schedule");
   }

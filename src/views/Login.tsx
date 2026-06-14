@@ -2,7 +2,11 @@ import { useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { User } from "../api/types";
 
-export function Login({ onLogin }: { onLogin: (user: User) => void }) {
+export function Login({
+  onLogin,
+}: {
+  onLogin: (user: User, token: string) => void;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -14,8 +18,8 @@ export function Login({ onLogin }: { onLogin: (user: User) => void }) {
     setBusy(true);
     try {
       const result = await api.login(email.trim(), password);
-      if (result.user) {
-        onLogin(result.user);
+      if (result.user && result.token) {
+        onLogin(result.user, result.token);
       } else {
         setError(result.message ?? "Invalid email or password.");
       }
