@@ -1,0 +1,19 @@
+name = "guardguys-web"
+main = "worker/index.ts"
+compatibility_date = "2026-06-01"
+
+# Serve the built React SPA from /dist and let the Worker handle /api/* + routing.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# --- Phase 2 (later): bind a D1 database here, then implement /api/* in the
+# Worker instead of proxying to Heroku. Create it with:
+#   wrangler d1 create guardguys
+# then uncomment and paste the returned database_id:
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "guardguys"
+# database_id = "<paste-id-here>"
