@@ -58,3 +58,32 @@ export function formatWeekRange(weekStart: Date): string {
   const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
   return `${weekStart.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, { ...opts, year: "numeric" })}`;
 }
+
+/** ISO UTC string -> value for an <input type="datetime-local"> (local time). */
+export function toLocalInputValue(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** datetime-local value (local time) -> ISO UTC string for the API. */
+export function fromLocalInputValue(value: string): string {
+  return new Date(value).toISOString();
+}
+
+/** A datetime-local value for a given day at 09:00 local. */
+export function defaultInputValueForDay(day: Date): string {
+  const d = new Date(day);
+  d.setHours(9, 0, 0, 0);
+  return toLocalInputValue(d.toISOString());
+}
+
+/** Split a millisecond duration into whole hours and minutes (absolute). */
+export function splitDuration(ms: number): { hours: number; minutes: number } {
+  const totalMin = Math.round(Math.abs(ms) / 60000);
+  return { hours: Math.floor(totalMin / 60), minutes: totalMin % 60 };
+}
+
+export function durationToMs(hours: number, minutes: number): number {
+  return (hours * 60 + minutes) * 60000;
+}

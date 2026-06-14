@@ -81,18 +81,19 @@ npm run worker:deploy  # wrangler deploy
 ## Roadmap
 
 - [x] Project scaffold, API client, auth/session, weekly schedule view
-- [ ] Event create / edit / delete UI
-- [ ] Admin: user management UI
+- [x] Event create / edit / delete UI (with assignment + on-site + notes)
+- [x] Admin: user management UI (create / edit / delete, admin-only tab)
 - [ ] Phase 2: Cloudflare Worker + D1 backend, data migration, retire Heroku
 
 ## Layout
 
 ```
 src/
-  api/        types.ts, client.ts   (API contract + fetch wrapper)
-  lib/        date.ts, auth.ts       (helpers + local session)
-  views/      Login.tsx, ScheduleWeek.tsx
+  api/         types.ts, client.ts    (API contract + fetch wrapper)
+  lib/         date.ts, auth.ts        (helpers + local session)
+  components/  Modal, EventModal, UserModal
+  views/       Login, ScheduleWeek, Admin
   App.tsx, main.tsx, index.css
-worker/       index.ts               (Cloudflare Worker: static + /api proxy)
-docs/         MIGRATION.md           (Phase 2 plan)
+worker/        index.ts, schema.sql    (Cloudflare Worker + Phase 2 D1 schema)
+docs/          MIGRATION.md            (Phase 2 plan)
 ```
