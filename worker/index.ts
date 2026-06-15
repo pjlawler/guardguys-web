@@ -14,6 +14,11 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   JWT_SECRET: string;
+  // Resend (https://resend.com) — set via `wrangler secret put RESEND_API_KEY`.
+  // When unset, assignment emails are silently skipped (e.g. local dev).
+  RESEND_API_KEY?: string;
+  // Optional override for the "from" address; must be on a verified domain.
+  EMAIL_FROM?: string;
 }
 
 // --- Response helpers ---------------------------------------------------
@@ -102,6 +107,100 @@ async function eventById(env: Env, id: number) {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+// --- Email notifications -----------------------------------------------
+
+const DEFAULT_FROM = "GuardGuys <noreply@guardguys.com>";
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function userById(
+  env: Env,
+  id: number,
+): Promise<{ email: string; username: string } | null> {
+  return env.DB.prepare("SELECT email, username FROM users WHERE id = ?")
+    .bind(id)
+    .first<{ email: string; username: string }>();
+}
+
+async function sendEventEmail(
+  env: Env,
+  to: { email: string; username: string },
+  kind: "assigned" | "unassigned",
+  event: { date: string; event: string },
+): Promise<void> {
+  if (!env.RESEND_API_KEY) return; // email not configured — skip silently
+  const title = event.event || "an event";
+  let when = event.date;
+  try {
+    when = new Date(event.date).toLocaleString("en-US", {
+      dateStyle: "full",
+      timeStyle: "short",
+      timeZone: "UTC",
+    });
+  } catch {
+    // fall back to the raw stored value
+  }
+  const subject =
+    kind === "assigned"
+      ? `You've been assigned: ${title}`
+      : `You've been unassigned: ${title}`;
+  const verb = kind === "assigned" ? "assigned to" : "removed from";
+  const html = `<p>Hi ${escapeHtml(to.username)},</p>
+<p>You have been ${verb} the following event:</p>
+<ul>
+  <li><strong>${escapeHtml(title)}</strong></li>
+  <li>${escapeHtml(when)} (UTC)</li>
+</ul>
+<p>&mdash; GuardGuys</p>`;
+
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: env.EMAIL_FROM || DEFAULT_FROM,
+      to: to.email,
+      subject,
+      html,
+    }),
+  });
+  if (!res.ok) {
+    console.error(`Resend send failed (${res.status}): ${await res.text()}`);
+  }
+}
+
+// Notify the affected users when an event's assignee changes. The previous
+// assignee (if any) gets an "unassigned" email; the new assignee (if any) gets
+// an "assigned" email. Errors are logged, never thrown — called via
+// ctx.waitUntil() so email never blocks or breaks the API response.
+async function notifyAssignmentChange(
+  env: Env,
+  oldUserId: number | null,
+  newUserId: number | null,
+  event: { date: string; event: string },
+): Promise<void> {
+  try {
+    if (oldUserId != null) {
+      const u = await userById(env, oldUserId);
+      if (u) await sendEventEmail(env, u, "unassigned", event);
+    }
+    if (newUserId != null) {
+      const u = await userById(env, newUserId);
+      if (u) await sendEventEmail(env, u, "assigned", event);
+    }
+  } catch (e) {
+    console.error(`Assignment email failed: ${String(e)}`);
+  }
 }
 
 // --- Handlers -----------------------------------------------------------
@@ -234,9 +333,14 @@ async function weekEvents(env: Env, dateParam: string): Promise<Response> {
   return json(results.map(eventToJson));
 }
 
-async function createEvent(request: Request, env: Env): Promise<Response> {
+async function createEvent(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const b = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const ts = nowIso();
+  const newUserId = b.user_id == null ? null : Number(b.user_id);
   const row = await env.DB.prepare(
     `INSERT INTO events (date, event, onsite, notes, duration, user_id, createdAt, updatedAt)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
@@ -247,20 +351,38 @@ async function createEvent(request: Request, env: Env): Promise<Response> {
       b.onsite ? 1 : 0,
       String(b.notes ?? ""),
       Number(b.duration ?? 0),
-      b.user_id == null ? null : Number(b.user_id),
+      newUserId,
       ts,
       ts,
     )
     .first<{ id: number }>();
-  return json(await eventById(env, row!.id), 201);
+  const created = await eventById(env, row!.id);
+  // Creating an event with an assignee counts as an assignment.
+  if (created && newUserId != null) {
+    ctx.waitUntil(notifyAssignmentChange(env, null, newUserId, created));
+  }
+  return json(created, 201);
 }
 
 async function updateEvent(
   request: Request,
   env: Env,
   id: number,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const b = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+  // If this request changes the assignee, capture who it was beforehand so we
+  // can tell assignment from unassignment after the write.
+  let oldUserId: number | null | undefined;
+  const newUserId = b.user_id == null ? null : Number(b.user_id);
+  if (b.user_id !== undefined) {
+    const cur = await env.DB.prepare("SELECT user_id FROM events WHERE id = ?")
+      .bind(id)
+      .first<{ user_id: number | null }>();
+    oldUserId = cur ? cur.user_id : undefined;
+  }
+
   const sets: string[] = [];
   const vals: unknown[] = [];
   const setIf = (key: string, col: string, transform: (v: unknown) => unknown) => {
@@ -285,7 +407,13 @@ async function updateEvent(
     .bind(...vals)
     .run();
   if (!res.meta.changes) return error("Event not found.", 404);
-  return json(await eventById(env, id));
+
+  const updated = await eventById(env, id);
+  // Email only when the assignee actually changed.
+  if (updated && oldUserId !== undefined && newUserId !== oldUserId) {
+    ctx.waitUntil(notifyAssignmentChange(env, oldUserId, newUserId, updated));
+  }
+  return json(updated);
 }
 
 async function deleteEvent(env: Env, id: number): Promise<Response> {
@@ -295,7 +423,12 @@ async function deleteEvent(env: Env, id: number): Promise<Response> {
 
 // --- Router -------------------------------------------------------------
 
-async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleApi(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext,
+): Promise<Response> {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders() });
 
@@ -336,12 +469,12 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (weekMatch && method === "GET") return weekEvents(env, weekMatch[1]);
 
   if (path === "/api/events" && method === "POST")
-    return createEvent(request, env);
+    return createEvent(request, env, ctx);
 
   const eventIdMatch = path.match(/^\/api\/events\/(\d+)$/);
   if (eventIdMatch) {
     const id = Number(eventIdMatch[1]);
-    if (method === "PUT") return updateEvent(request, env, id);
+    if (method === "PUT") return updateEvent(request, env, id, ctx);
     if (method === "DELETE") return deleteEvent(env, id);
   }
 
@@ -349,11 +482,15 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) {
       try {
-        return await handleApi(request, env, url);
+        return await handleApi(request, env, url, ctx);
       } catch (e) {
         return error(`Server error: ${String(e)}`, 500);
       }
