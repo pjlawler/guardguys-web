@@ -19,6 +19,10 @@ export interface Env {
   RESEND_API_KEY?: string;
   // Optional override for the "from" address; must be on a verified domain.
   EMAIL_FROM?: string;
+  // Shared secret for app-to-app event creation (see POST /api/events). A
+  // trusted backend sends it as the `X-API-Key` header instead of a user JWT.
+  // Set via `wrangler secret put EVENTS_API_KEY`; unset = key auth disabled.
+  EVENTS_API_KEY?: string;
 }
 
 // --- Response helpers ---------------------------------------------------
@@ -27,7 +31,7 @@ function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -333,33 +337,89 @@ async function weekEvents(env: Env, dateParam: string): Promise<Response> {
   return json(results.map(eventToJson));
 }
 
+const MAX_EVENT_LEN = 500;
+const MAX_NOTES_LEN = 5000;
+
+interface NewEvent {
+  date: string;
+  event: string;
+  onsite: number;
+  notes: string;
+  duration: number;
+  user_id: number | null;
+}
+
+// Validate + normalize a create-event body. Returns the cleaned fields, or an
+// error string describing the first problem. Applied to every POST /api/events
+// (both user-JWT and X-API-Key callers), so untrusted external input can't
+// create malformed or oversized rows.
+function parseNewEvent(
+  b: Record<string, unknown>,
+): { value: NewEvent } | { error: string } {
+  // event title — required, non-empty, bounded
+  const event = typeof b.event === "string" ? b.event.trim() : "";
+  if (!event) return { error: "Event title is required." };
+  if (event.length > MAX_EVENT_LEN)
+    return { error: `Event title must be ${MAX_EVENT_LEN} characters or fewer.` };
+
+  // date — required, must be a parseable timestamp
+  if (typeof b.date !== "string" || b.date.trim() === "")
+    return { error: "Event date is required." };
+  if (Number.isNaN(Date.parse(b.date)))
+    return { error: "Event date is not a valid date." };
+
+  // duration — optional number (negatives allowed; legacy data contains them)
+  let duration = 0;
+  if (b.duration !== undefined && b.duration !== null) {
+    const n = Number(b.duration);
+    if (!Number.isFinite(n)) return { error: "Event duration must be a number." };
+    duration = n;
+  }
+
+  // notes — optional string, bounded
+  const notes = b.notes == null ? "" : String(b.notes);
+  if (notes.length > MAX_NOTES_LEN)
+    return { error: `Event notes must be ${MAX_NOTES_LEN} characters or fewer.` };
+
+  // user_id — optional; if present and non-null must be a positive integer
+  let user_id: number | null = null;
+  if (b.user_id !== undefined && b.user_id !== null) {
+    const n = Number(b.user_id);
+    if (!Number.isInteger(n) || n <= 0)
+      return { error: "Event user_id must be a positive integer." };
+    user_id = n;
+  }
+
+  return {
+    value: { date: b.date, event, onsite: b.onsite ? 1 : 0, notes, duration, user_id },
+  };
+}
+
 async function createEvent(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
   const b = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const parsed = parseNewEvent(b);
+  if ("error" in parsed) return error(parsed.error, 400);
+  const v = parsed.value;
+
+  // Reject an assignee that doesn't exist rather than silently orphaning it.
+  if (v.user_id != null && !(await userById(env, v.user_id)))
+    return error("Assigned user_id does not exist.", 400);
+
   const ts = nowIso();
-  const newUserId = b.user_id == null ? null : Number(b.user_id);
   const row = await env.DB.prepare(
     `INSERT INTO events (date, event, onsite, notes, duration, user_id, createdAt, updatedAt)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   )
-    .bind(
-      String(b.date ?? ts),
-      String(b.event ?? ""),
-      b.onsite ? 1 : 0,
-      String(b.notes ?? ""),
-      Number(b.duration ?? 0),
-      newUserId,
-      ts,
-      ts,
-    )
+    .bind(v.date, v.event, v.onsite, v.notes, v.duration, v.user_id, ts, ts)
     .first<{ id: number }>();
   const created = await eventById(env, row!.id);
   // Creating an event with an assignee counts as an assignment.
-  if (created && newUserId != null) {
-    ctx.waitUntil(notifyAssignmentChange(env, null, newUserId, created));
+  if (created && v.user_id != null) {
+    ctx.waitUntil(notifyAssignmentChange(env, null, v.user_id, created));
   }
   return json(created, 201);
 }
@@ -421,6 +481,29 @@ async function deleteEvent(env: Env, id: number): Promise<Response> {
   return json({ ok: true });
 }
 
+// --- API-key auth (app-to-app) -----------------------------------------
+
+// Constant-time string compare so a wrong key can't be guessed by timing.
+function timingSafeEqual(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const ab = enc.encode(a);
+  const bb = enc.encode(b);
+  if (ab.length !== bb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
+  return diff === 0;
+}
+
+// True when the request carries the shared events API key. Used to let a
+// trusted backend create events without a user login. Disabled (always false)
+// when EVENTS_API_KEY is not configured.
+function hasValidApiKey(request: Request, env: Env): boolean {
+  if (!env.EVENTS_API_KEY) return false;
+  const provided = request.headers.get("X-API-Key");
+  if (!provided) return false;
+  return timingSafeEqual(provided, env.EVENTS_API_KEY);
+}
+
 // --- Router -------------------------------------------------------------
 
 async function handleApi(
@@ -440,6 +523,13 @@ async function handleApi(
   // Public: login
   if (path === "/api/users/login" && method === "POST") {
     return handleLogin(request, env);
+  }
+
+  // App-to-app: a trusted backend may create events with the shared API key
+  // (X-API-Key header) instead of a user JWT. Scoped to event creation only;
+  // every other route still requires a valid token below.
+  if (path === "/api/events" && method === "POST" && hasValidApiKey(request, env)) {
+    return createEvent(request, env, ctx);
   }
 
   // Everything else requires a valid token.

@@ -17,3 +17,8 @@ database_id = "e9d98c71-afde-4f86-9413-3741def77bc3"
 # JWT signing secret is set as a Worker secret (not stored here):
 #   echo "<random-secret>" | wrangler secret put JWT_SECRET
 # For local `wrangler dev`, put JWT_SECRET in .dev.vars (gitignored).
+#
+# Shared key that lets a trusted backend create events (POST /api/events) via
+# the X-API-Key header instead of a user login:
+#   echo "<random-secret>" | wrangler secret put EVENTS_API_KEY
+# Leave unset to disable app-to-app key auth entirely.
