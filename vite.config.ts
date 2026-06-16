@@ -2,11 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
-// During local dev the browser would be blocked by CORS if it called the
-// Heroku API directly (the API sends no Access-Control-Allow-Origin header).
-// Vite's dev server proxies /api/* to Heroku so requests are same-origin.
-// In production the React app talks to the Cloudflare Worker (see /worker),
-// which proxies to Heroku in Phase 1 and becomes the D1-backed API in Phase 2.
+// Vite's dev server proxies /api/* to the production Cloudflare Worker so dev
+// writes land on the D1-backed API (the same backend production uses), keeping
+// local and prod in sync. The Worker sends CORS headers, but proxying keeps
+// requests same-origin so cookies/headers behave exactly as in production.
 //
 // Base is "/" everywhere: the app is served at the root on Cloudflare
 // (guardguys-web.pat-e8d.workers.dev) and on the GitHub Pages custom domain
@@ -52,7 +51,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "https://guardguys.herokuapp.com",
+        target: "https://guardguys-web.pat-e8d.workers.dev",
         changeOrigin: true,
         secure: true,
       },
